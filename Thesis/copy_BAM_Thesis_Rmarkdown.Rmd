@@ -1,0 +1,1195 @@
+---
+title: "copy_BAM_Thesis_Rmarkdown"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-03-08"
+---
+
+
+#Loading the packages
+```{r}
+library("tidymodels")
+library("knitr")
+library("themis")
+library("tidyverse")
+library("glmnet")
+library("kernlab")
+library("skimr")
+library("stargazer")
+library("ROSE")
+library("caret")
+library("pROC")
+library("e1071")
+library("Metrics")
+library("DPpack")
+library(caret)
+library(Metrics)
+library(MLmetrics)
+library("DPpack")
+library(readr)
+library("corrplot")
+
+
+```
+
+
+Citation:  Hlavac, Marek (2022). stargazer: Well-Formatted Regression and Summary Statistics Tables. R package version 5.2.3. https://CRAN.R-project.org/package=stargazer 
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The directory:
+
+```{r, echo = FALSE}
+library(here)
+library(knitr)
+
+
+```
+#Downloading the dataset
+```{r}
+
+df <- read_csv("Thesis_Data_Telco-Customer-Churn.csv")
+View(df)
+
+df <- as.data.frame(df)
+```
+
+
+
+#Data Cleaning
+
+There are 11 NA's and I decided to remove the NA's to prevent future issues. Especially since there were only 11 out of 7043, didn't think it would have a large effect on the findings. 
+
+```{r}
+sum(is.na(df))
+
+
+which(is.na(df))
+Nas <- df[rowSums(is.na(df)) > 0,]
+
+df <- na.omit(df)
+
+
+```
+#Recoding the binary variables
+```{r}
+#Weirdly it was not numeric 
+df$SeniorCitizen <- as.numeric(df$SeniorCitizen)
+class(df$SeniorCitizen)
+# 0 = Check, and 1 = Automatic 
+
+
+df$gender <-ifelse(df$gender=="Female",1,0)
+df$gender <- as.numeric(df$gender)
+class(df$gender)
+#1  = female, 0 = male
+
+
+df$Partner <-ifelse(df$Partner =="Yes",1,0)
+df$Partner <- as.numeric(df$Partner)
+class(df$Partner)
+#1  = Partner, 0 = no partner
+
+
+df$Dependents <- ifelse(df$Dependents =="Yes",1,0)
+df$Dependents  <- as.numeric(df$Dependents)
+typeof(df$Dependents )
+#1  = Yes, 0 = No
+
+
+df$PhoneService <- ifelse(df$PhoneService =="Yes",1,0)
+df$PhoneService  <- as.numeric(df$PhoneService)
+typeof(df$PhoneService )
+#1  = Yes, 0 = No
+
+
+
+df$PaperlessBilling <- ifelse(df$PaperlessBilling =="Yes",1,0)
+df$PaperlessBilling  <- as.numeric(df$PaperlessBilling)
+typeof(df$PaperlessBilling)
+#1  = Yes, 0 = No
+
+```
+
+#Summary Statistics
+```{r}
+stargazer(df, type = "text", title = "Table 1")
+```
+
+#Preprocessing
+
+Ensuring there are no duplicate values and checking for extreme outliers
+
+Also looking into categorical variables for the data summary in the thesis 
+```{r}
+
+######################################################
+length(unique(df$customerID))
+
+sum(duplicated(df))
+
+boxplot(df$tenure)
+boxplot(df$MonthlyCharges)
+boxplot(df$TotalCharges)
+
+df |> count(PaymentMethod) |> 
+  mutate(prop = n / sum(n))
+
+df |> count(Churn) |> 
+  mutate(prop = n / sum(n))
+
+df |> count(Contract) |> 
+  mutate(prop = n / sum(n))
+
+df |> count(InternetService) |> 
+  mutate(prop = n / sum(n))
+
+######################################################
+```
+
+
+
+#Recoding variables 
+```{r}
+
+
+df$PaymentMethod_dum <- df$PaymentMethod
+df$PaymentMethod_dum <- as.character(df$PaymentMethod_dum)
+df$PaymentMethod_dum <- case_when(df$PaymentMethod_dum == "Bank transfer (automatic)" ~ 1,
+                                  df$PaymentMethod_dum == "Credit card (automatic)" ~ 1,
+                                  df$PaymentMethod_dum == "Electronic check" ~ 0,
+                                  df$PaymentMethod_dum == "Mailed check" ~ 0,
+                                  TRUE ~ NA_real_)
+
+df$PaymentMethod_dum <- as.numeric(df$PaymentMethod_dum)
+typeof(df$PaymentMethod_dum)
+
+
+df$Contract_dum <-ifelse(df$Contract=="Month-to-month",1,0)
+df$Contract_dum <- as.numeric(df$Contract_dum)
+typeof(df$Contract_dum)
+#1  = month-to-month, 0 = two year or one year (long-term)
+
+
+df <- df %>% mutate_at(c('MultipleLines','InternetService','OnlineSecurity', 'OnlineBackup', 'DeviceProtection', "TechSupport", "StreamingTV", "StreamingMovies"), as.factor)
+
+class(df$InternetService)
+
+```
+
+
+#Splitting the Data
+
+```{r}
+
+set.seed(308613)
+split <- initial_split(df, prop = 0.8, strata = Churn)
+
+train <- training(split)
+
+test  <- testing(split)
+
+k_fold <- 5
+
+
+
+
+```
+
+#checking the outpu
+```{r}
+train |> count(Churn) |> 
+  mutate(prop = n / sum(n))
+
+
+test |> count(Churn) |> 
+  mutate(prop = n / sum(n))
+
+```
+
+#Downsampling and oversampling
+```{r}
+
+train <- ovun.sample(Churn~., data=train,
+                                N=nrow(train), p=0.5, 
+                                seed=1, method="both")$data
+
+```
+
+#Correlation Plot
+
+```{r}
+###################################################### 
+
+numeric_vars <- sapply(train, is.numeric) %>%  which() %>%  names()
+correlations <-   cor(train[,numeric_vars],
+                              use = "pairwise.complete.obs")
+
+corrplot(correlations, method = "number")
+#total charges with tenure and total charges with monthly charges seem highly correlated. However, monthly carges and tenure are not as highly correlated ... potentially delete total charges? 
+
+corrplot(cor(train[,numeric_vars],), method = "number", type = "upper", 
+         order = "hclust", tl.cex = 0.8, tl.col = "black",
+         addCoef.col = "black", number.cex = 0.6)
+
+
+######################################################   
+```
+
+
+#Creating CV folds
+```{r}
+set.seed(593222)
+cv_folds <- vfold_cv(train, v = 5, strata = Churn)
+```
+
+#Factoring Churn
+```{r}
+df$Churn <- as.factor(df$Churn)
+train$Churn <- as.factor(train$Churn)
+test$Churn <- as.factor(test$Churn)
+```
+
+
+#Regularized Logistic Regression Non-Private Model
+Setting up the workflow 
+```{r}
+lr_mod <- logistic_reg() |> 
+  set_engine("glm")
+
+#for this, churn needs to be a factor 
+
+ lr_mod_recipe <- recipe(Churn ~tenure +TotalCharges + MonthlyCharges+ gender + SeniorCitizen + Partner+ Dependents+ PhoneService+ PaperlessBilling + Contract_dum+ PaymentMethod_dum + MultipleLines + OnlineSecurity +OnlineBackup + DeviceProtection + TechSupport +InternetService +StreamingTV + StreamingMovies, data = train) |> 
+  step_scale(tenure, MonthlyCharges, TotalCharges) |> 
+   step_dummy(InternetService, MultipleLines, OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies)
+   
+ 
+
+ 
+lr_mod_recipe |> prep(train) |> bake(new_data = NULL) |>
+  count(Churn) 
+
+
+ridge_logreg <- logistic_reg(penalty = tune(), mixture = 0) |> 
+  set_engine("glmnet")
+
+```
+
+
+
+
+```{r}
+ridge_wf <- workflow() |> 
+  add_recipe(lr_mod_recipe) |> 
+  add_model(ridge_logreg)
+
+lr_mod_workflow <- 
+  workflow() |> 
+  add_model(lr_mod) |> 
+  add_recipe(lr_mod_recipe)
+
+```
+
+
+```{r}
+class_metrics <- metric_set(yardstick::accuracy, yardstick::roc_auc, yardstick::sensitivity, yardstick::specificity)
+
+grid_ridge <- tibble(penalty = 10^(seq(from = -5, to = 5, length.out = 500)))
+```
+
+```{r}
+
+ridge_tune <- ridge_wf |> 
+  tune_grid(resamples = cv_folds, 
+            grid = grid_ridge,
+            metrics = class_metrics)
+
+ridge_tune |>
+  collect_metrics()
+
+```
+
+Selecting the best model baesd on the ROC AUC
+```{r}
+
+best_auc <- select_best(ridge_tune , "roc_auc")
+
+ridge_wf_tuned <- 
+  ridge_wf |> 
+  finalize_workflow(best_auc)
+ridge_wf_tuned
+```
+
+
+```{r}
+set.seed(9923)
+
+ridge_last_fit <- ridge_wf_tuned |> 
+  last_fit(split, metrics = class_metrics)
+ridge_test_metrics <- ridge_last_fit |> collect_metrics()
+ridge_test_metrics
+```
+
+
+
+#Differentially Private Regularized Logistic Regression 
+
+Processing the data in a way that is necessary for the differential privacy models 
+```{r}
+
+
+train$Churn <- ifelse(train$Churn == "Yes", 1,0)
+test$Churn <- ifelse(test$Churn == "Yes", 1,0)
+
+x_train <- train[, !(colnames(train) %in% c("Churn", "customerID", "PaymentMethod", "Contract"))]
+x_train<- as.data.frame(x_train)
+
+
+x_test <- test[, !(colnames(test) %in% c("Churn", "customerID","PaymentMethod", "Contract"))]
+x_test <- as.data.frame(x_test)
+
+
+y_train <- train$Churn
+y_test <- test$Churn
+
+# Standardize the continuous variables
+x_train_done <- scale(x_train[, c("tenure", "TotalCharges", "MonthlyCharges" )])
+x_test_done <- scale(x_test[, c("tenure","TotalCharges",  "MonthlyCharges")])
+
+
+# One-hot encode the categorical variables
+x_train_onehot <-  x_train[, c( "MultipleLines", "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies")]
+
+x_test_onehot <-  x_test[, c( "MultipleLines", "InternetService", "OnlineSecurity", "OnlineBackup", "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies")]
+
+extra_dum_train <-  x_train[, c("Contract_dum", "PaperlessBilling", "PaymentMethod_dum" ,"gender", "Partner", "Dependents", "PhoneService")]
+extra_dum_test <-  x_test[, c("Contract_dum", "PaperlessBilling", "PaymentMethod_dum" ,"gender", "Partner", "Dependents", "PhoneService")]
+
+
+dummy <- dummyVars(" ~ .", data=x_train_onehot)
+dummy_test <- dummyVars(" ~ .", data=x_test_onehot)
+
+x_train_onehot <- data.frame(predict(dummy, newdata = x_train_onehot))
+x_test_onehot <- data.frame(predict(dummy_test, newdata = x_test_onehot))
+
+# Combine the continuous and categorical variables
+x_train_processed <- cbind(x_train_done, x_train_onehot, extra_dum_train)
+x_test_processed <- cbind(x_test_done, x_test_onehot, extra_dum_test)
+
+```
+
+Creating a function to calculate the accuracy
+```{r}
+calculate_accuracy <- function(true_labels, predicted_scores, threshold = 0.5) {
+  predicted_labels <- ifelse(predicted_scores > threshold, 1, 0)
+  accuracy <- sum(true_labels == predicted_labels) / length(true_labels)
+  return(accuracy)
+}
+
+sensitivity <- function(true_labels, predicted_scores, threshold = 0.5) {
+  predicted_labels <- ifelse(predicted_scores > threshold, 1, 0)
+  true_positive <- sum(predicted_labels == 1 & true_labels == 1)
+  false_negative <- sum(predicted_labels == 0 & true_labels == 1)
+  sensitivity <- true_positive / (true_positive + false_negative)
+  return(sensitivity)
+}
+
+specificity <- function(true_labels, predicted_scores, threshold = 0.5) {
+  predicted_labels <- ifelse(predicted_scores > threshold, 1, 0)
+  specificity <- sum(predicted_labels == 0 & true_labels == 0) / sum(true_labels == 0)
+  return(specificity)
+}
+
+folds <- createFolds(y_train, k = 5, list = TRUE, returnTrain = FALSE)
+```
+
+
+```{r}
+mapXy <- function(X, coeff) e1071::sigmoid(X%*%coeff)
+loss <- function(y.hat,y) -(y*log(y.hat) + (1-y)*log(1-y.hat))
+regularizer <- "l2"
+c <- 1/4 
+mapXy.gr <- NULL 
+regularizer.gr <- NULL# 
+```
+
+#Output Perturbation Regularized Logistc Regression 
+
+```{r}
+
+set.seed(3333)
+# Define the range of values for epsilon and gamma
+eps_values<- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3, 0.4, 0.5)
+gamma_values <- c(10^-5, 10^-4, 10^-3, 10^-2, 10^-1, 10^1, 10^2, 10^3, 10^4, 10^5)
+
+# Define the bounds for the input data
+upper.bounds <- apply(x_train_processed, 2, max) 
+lower.bounds <- apply(x_train_processed, 2, min)
+
+# Create empty lists to store the performance metrics for each combination of eps and gamma
+best_auc <- 0
+best_gamma_for_auc <- 0 
+best_acc_scores <- list()
+best_auc_scores <- list()
+best_specificity_scores <- list()
+best_sensitivity_scores <- list()
+final_gamma <- list()
+
+# Loop over all possible combinations of eps and gamma
+for (eps in eps_values) {
+  for (gamma in gamma_values) {
+    # Define the logistic regression model with differential privacy
+    RLR_OUT <- EmpiricalRiskMinimizationDP.CMS$new(mapXy, loss, regularizer = 'l2', eps, gamma, perturbation.method = 'output', c = 1/4)
+    
+    # Perform cross-validation using the predefined folds
+    auc_scores_cv <- c()
+    acc_scores_cv <- c()
+    
+    for (fold in seq_along(folds)) {
+      # Split the data into training and validation sets using the predefined folds
+      train_indices <- unlist(folds[-fold])
+      valid_indices <- folds[[fold]]
+      x_train_cv <- x_train_processed[train_indices, ]
+      y_train_cv <- y_train[train_indices]
+      x_valid_cv <- x_train_processed[valid_indices, ]
+      y_valid_cv <- y_train[valid_indices]
+      
+      # Fit the model on the training data
+      RLR_OUT$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+      
+      # Make predictions 
+      predicted.y <- RLR_OUT$predict(x_valid_cv)
+      predicted.y <- as.numeric(predicted.y)
+      
+      # Compute the AUC score and accuracy
+      roc_object <- roc(y_valid_cv, predicted.y)
+      auc_scores_cv <- c(auc_scores_cv, pROC::auc(roc_object))
+      mean_auc <- mean(auc_scores_cv)
+
+                         
+    }
+    
+    if (mean_auc > best_auc) {
+      best_auc <-  mean_auc 
+      best_gamma_for_auc <- gamma
+    }
+  }
+  
+  RLR_OUT_auc <- EmpiricalRiskMinimizationDP.CMS$new(mapXy, loss, regularizer = 'l2', eps, gamma = best_gamma_for_auc, perturbation.method = 'output', c = 1/4)
+  RLR_OUT_auc$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  predicted.y_test_auc <- RLR_OUT$predict(x_test_processed)
+  
+  predicted.y_test_auc <- as.numeric(predicted.y_test_auc)
+  
+  roc_object_test <- roc(y_test, predicted.y_test_auc)
+  best_auc_scores[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  best_acc_scores[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, predicted.y_test_auc)
+  best_sensitivity_scores[[paste0("eps_", eps)]] <- sensitivity(y_test, predicted.y_test_auc)
+  best_specificity_scores[[paste0("eps_", eps)]] <- specificity(y_test, predicted.y_test_auc)
+  final_gamma[[paste0("eps_", eps)]] <- best_gamma_for_auc
+  
+  
+}
+  
+
+# Combine the lists into a data frame
+RLR_OUT_DF <- data.frame(epsilon = eps_values,
+                                   auc = unlist(best_auc_scores),
+                                   acc = unlist(best_acc_scores),
+                         sensitivity = unlist(best_sensitivity_scores),
+                         specificity = unlist(best_specificity_scores),
+                         gamma = unlist(final_gamma) )
+
+
+print(RLR_OUT_DF)
+
+
+
+
+```
+
+
+#Objective Perturbation Regularized Logistc Regression 
+
+```{r}
+eps_values1 <- c(0.001, 0.01)
+gamma_values1 <- c(10^4, 10^5, 10^6, 10^7, 10^8, 10^9)
+
+eps_values2 <- c(0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3)
+gamma_values2 <- c(10^3, 10^4, 10^5, 10^6, 10^7, 10^8,  10^9)
+
+
+eps_values3 <- c(0.4, 0.5)
+
+gamma_values3 <- c(10^-1, 10^1,10^2, 10^3, 10^4, 10^5, 10^6, 10^7, 10^8, 10^9) 
+
+eps_values <- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3, 0.4, 0.5)
+
+upper.bounds <- apply(x_train_processed, 2, max) 
+lower.bounds <- apply(x_train_processed, 2, min)
+
+
+obj_acc_scores <- list()
+obj_auc_scores <- list()
+
+best_auc_scores_obj <- list()
+best_acc_scores_obj <- list()
+
+obj_best_gamma_for_auc <- list()
+obj_best_auc <- 0
+
+obj_best_specificity_scores <- list()
+obj_best_sensitivity_scores <- list()
+obj_final_gamma <- list()
+
+
+# Loop over all possible combinations of eps and gamma
+for (eps in eps_values3) {
+  for (gamma in gamma_values3) {
+    # Define the logistic regression model with differential privacy
+    lgobj <- EmpiricalRiskMinimizationDP.CMS$new(mapXy, loss, regularizer =  'l2', eps,
+                                                      gamma, perturbation.method = 'objective', c = 1/4)
+    
+    # Perform cross-validation using the predefined folds
+    auc_scores_cv_lgobj <- c()
+
+    
+    for (fold in seq_along(folds)) {
+      # Split the data into training and validation sets using the predefined folds
+      train_indices <- unlist(folds[-fold])
+      valid_indices <- folds[[fold]]
+      x_train_cv <- x_train_processed[train_indices,]
+      y_train_cv <- y_train[train_indices]
+      x_valid_cv <- x_train_processed[valid_indices,]
+      y_valid_cv <- y_train[valid_indices]
+      
+      # Fit the model on the training data
+      lgobj$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+      
+      # Make predictions 
+      lgobj.y <- lgobj$predict(x_valid_cv)
+      lgobj.y <- as.numeric(lgobj.y)
+      
+      roc_object_lgobj <- roc(y_valid_cv, lgobj.y )
+      auc_scores_cv_lgobj <- c(auc_scores_cv, pROC::auc(roc_object_lgobj))
+      obj_mean_auc <- mean(auc_scores_cv_lgobj)
+
+    }
+    
+    if (obj_mean_auc > obj_best_auc) {
+      obj_best_auc <-  obj_mean_auc 
+      obj_best_gamma_for_auc <- gamma
+    }
+
+   
+  }
+  
+  lgobj_auc <- EmpiricalRiskMinimizationDP.CMS$new(mapXy, loss, regularizer =  'l2', eps, perturbation.method = 'objective', c = 1/4, gamma = obj_best_gamma_for_auc)
+  lgobj_auc$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  obj_predicted.y_test_auc <- lgobj_auc$predict(x_test_processed)
+  obj_predicted.y_test_auc <- as.numeric(obj_predicted.y_test_auc)
+  
+  
+  roc_object_test <- roc(y_test, obj_predicted.y_test_auc)
+  best_auc_scores_obj[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  best_acc_scores_obj[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, obj_predicted.y_test_auc)
+  obj_best_specificity_scores[[paste0("eps_", eps)]] <- sensitivity(y_test, obj_predicted.y_test_auc)
+  obj_best_sensitivity_scores[[paste0("eps_", eps)]] <- specificity(y_test, obj_predicted.y_test_auc)
+  obj_final_gamma[[paste0("eps_", eps)]] <- obj_best_gamma_for_auc
+  
+}
+
+
+RLR_OBJ_DF3 <- data.frame(epsilon = eps_values,
+                                   auc = unlist(best_auc_scores_obj),
+                                   acc = unlist(best_acc_scores_obj),
+                         sensitivity = unlist(obj_best_specificity_scores),
+                         specificity = unlist(obj_best_sensitivity_scores),
+                         gamma = unlist(obj_final_gamma) )
+
+
+# Print the data frame
+print(RLR_OBJ_DF3)
+
+
+  
+```
+
+
+
+
+#Non-private SVM Model
+
+```{r}
+
+train_svm <- data.frame(y_train, x_train_processed)
+test_svm <- data.frame(y_test, x_test_processed)
+
+```
+
+Linear SVM 
+```{r}
+
+set.seed(2424)
+ctrl <- trainControl(method = "cv", number = 5)
+
+tune_out_linear <- tune.svm(x = x_train_processed,
+                     y= y_train,
+                     cost=c(10^-3, 10^-2, 10^-1, 10^1, 10^2, 10^3),
+                     kernel="linear")
+
+
+tune_out_linear$best.parameters$cost
+
+SVMnonpriv_acc <- list()
+SVMnonpriv_roc <- list()
+SVMnonpriv_AUC <- list()
+SVMnonpriv_sensitivity <- list()
+SVMnonpriv_specificity <- list()
+
+SVMcost <- c(10^-3, 10^-2, 10^-1, 10^1, 10^2, 10^3)
+
+for (cost in SVMcost) {
+  svm_model_linear <- svm(formula = y_train~ .,
+                 data=train_svm,
+                 method = "C-classification", 
+                 kernel = "linear", 
+                 cost = 0.001,
+                 trControl = ctrl)
+  y_pred_SVM_linear = predict(svm_model_linear, newdata = x_test_processed)
+  y_pred_SVM_linear<- as.numeric(y_pred_SVM_linear)
+  
+  SVMnonpriv_acc[[as.character(cost)]] <- calculate_accuracy(y_test, y_pred_SVM_linear)
+  SVMnonpriv_roc[[as.character(cost)]] <- roc(y_test, y_pred_SVM_linear)
+  SVMnonpriv_AUC[[as.character(cost)]] <- pROC::auc(SVMnonpriv_roc[[as.character(cost)]])
+  SVMnonpriv_sensitivity[[as.character(cost)]] <- sensitivity(y_test, y_pred_SVM_linear)
+  SVMnonpriv_specificity[[as.character(cost)]] <- specificity(y_test, y_pred_SVM_linear)
+
+  
+}
+
+svm_model_linear <- svm(formula = y_train~ .,
+                        data=train_svm,
+                        method = "C-classification", 
+                        kernel = "linear", 
+                        cost = 100)
+y_pred_SVM_linear <- predict(svm_model_linear, newdata = x_test_processed)
+y_pred_SVM_linear<- as.numeric(y_pred_SVM_linear)
+SVMnonpriv_acc[[as.character(cost)]] <- calculate_accuracy(y_test, y_pred_SVM_linear)
+SVMnonpriv_roc[[as.character(cost)]] <- roc(y_test, y_pred_SVM_linear)
+SVMnonpriv_AUC[[as.character(cost)]] <- pROC::auc(SVMnonpriv_roc[[as.character(cost)]])
+SVMnonpriv_sensitivity[[as.character(cost)]] <- sensitivity(y_test, y_pred_SVM_linear)
+SVMnonpriv_specificity[[as.character(cost)]] <- specificity(y_test, y_pred_SVM_linear)
+
+
+SVM_nonpriv <- data.frame(auc = unlist(SVMnonpriv_AUC),
+                          acc = unlist(SVMnonpriv_acc),
+                          sensitivity = unlist(SVMnonpriv_sensitivity),
+                          specificity = unlist(  SVMnonpriv_specificity))
+
+
+
+print(SVM_nonpriv)
+
+```
+
+
+Radial SVM
+
+```{r}
+tune_out_radial <- tune.svm(x = x_train_processed,
+                     y= y_train,
+                     gamma=c(0.001, 0.01, 0.1, 1, 10, 100),
+                     cost=c(10^-4, 10^-3, 10^-2, 10^-1, 10^1, 10^2, 10^3),
+                     kernel="radial")
+
+
+tune_out_radial$best.parameters$cost
+
+tune_out_radial$best.parameters$gamma
+
+#build model
+svm_model_radial <- svm(formula = y_train~ .,
+                 data=train_svm,
+                 method = "C-classification", 
+                 kernel = "radial", 
+                 cost =  10, #tune_out_radial$best.parameters$cost, 
+                 gamma = 100,   # tune_out_radial$best.parameters$gamma,
+                 trControl = ctrl)
+
+
+
+#training set predictions
+y_pred_SVM_radial <- predict(svm_model_radial, newdata = x_test_processed)
+y_pred_SVM_radial<- as.numeric(y_pred_SVM_radial > .5)
+
+
+SVMnonpriv_acc_radial <- calculate_accuracy(y_test, y_pred_SVM_radial)
+SVMnonpriv_roc_radial <- roc(y_test, y_pred_SVM_radial)
+SVMnonpriv_AUC_radial <- pROC::auc(SVMnonpriv_roc_radial)
+SVMnonpriv_sensitivity_radial <- sensitivity(y_test, y_pred_SVM_radial)
+SVMnonpriv_specificity_radial <- specificity(y_test, y_pred_SVM_radial)
+
+print(c("Accuracy", SVMnonpriv_acc_radial))
+print(c("AUC",SVMnonpriv_AUC_radial))
+print(c("Sensitivity",SVMnonpriv_sensitivity_radial))
+print(c("Specificity",SVMnonpriv_specificity_radial))
+
+
+```
+
+Trying to plot SVM model 
+```{r}
+library(caret)
+library(e1071)
+
+#sample data
+
+
+#SVM model
+svm.model <- svm(as.factor(y_train) ~ ., data = train_svm)
+
+#plot SVM model
+plot(svm.model, data = train_svm, )
+
+m <- svm(as.factor(y_train) ~., data = train_svm)
+plot(m, train_svm, gender ~ tenure,
+     slice = list(gender = 5625, tenure = 5625))
+```
+
+
+#Differentially Private SVM
+```{r}
+# Construct object for SVM
+regularizer <- 'l2' 
+folds <- createFolds(y_train, k = 5, list = TRUE, returnTrain = FALSE)
+```
+
+#Output Perturbation Linear SVM 
+```{r}
+# Define the range of values for epsilon and gamma
+set.seed(2424)
+
+eps_values <- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3,0.4, 0.5, Inf) 
+
+lambda_values <- seq(10^-5, 10^5, length.out = 40)
+huber <- c(0.01, 0.3, 0.4, 0.5)
+
+# Define the bounds for the input data
+upper.bounds <- apply(x_train_processed, 2, max)
+lower.bounds <- apply(x_train_processed, 2, min)
+
+#expanindg the  bounds created even more instability 
+SVM_auc_scores <- list()
+SVM_acc_scores <- list()
+SVM_gamma_for_auc <- list()
+SVM_gamma_for_acc <- list()
+SVM_specificity_scores <- list()
+SVM_sensitivity_scores <- list()
+SVM_final_gamma <- list()
+
+SVM_best_auc <- 0
+
+SVM_eps_huber <- 0
+SVM_eps_huber_final <- list()
+
+for (eps in eps_values) {
+    for (gamma in gamma_values) {
+      for (huber.h in huber){
+        
+        # Define the logistic regression model with differential privacy
+        SVMdp <- svmDP$new(regularizer = 'l2', eps, gamma, perturbation.method = 'output', kernel="linear", huber.h)
+
+        # Perform cross-validation using the predefined folds
+        auc_scores_cv <- c()
+        acc_scores_cv <- c()
+        for (fold in seq_along(folds)) {
+          # Split the data into training and validation sets using the predefined folds
+          train_indices <- unlist(folds[-fold])
+          valid_indices <- folds[[fold]]
+          x_train_cv <- x_train_processed[train_indices,]
+          y_train_cv <- y_train[train_indices]
+          x_valid_cv <- x_train_processed[valid_indices, ]
+          y_valid_cv <- y_train[valid_indices]
+      
+
+          # Fit the model on the training data
+          SVMdp$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+          
+          predicted.y <- SVMdp$predict(x_valid_cv)
+          predicted.y <- as.numeric(predicted.y)
+          
+          roc_object <- roc(y_valid_cv, predicted.y)
+          auc_scores_cv <- c(auc_scores_cv, pROC::auc(roc_object))
+          mean_auc <- mean(auc_scores_cv)
+        }
+      }
+    }
+  mean_auc <- mean(auc_scores_cv)
+  mean_acc <- mean(acc_scores_cv)
+  if (mean_auc > SVM_best_auc) {
+    SVM_best_auc <- mean_auc
+    SVM_gamma_for_auc <- gamma
+    SVM_eps_huber <- huber.h
+  }
+  
+  SVM_auc <- svmDP$new(regularizer = 'l2',  eps, gamma = SVM_gamma_for_auc, kernel="linear", huber.h = SVM_eps_huber, perturbation.method = 'output')
+  
+  SVM_auc$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  predicted.y_test_auc <- SVM_auc$predict(x_test_processed)
+  predicted.y_test_auc <- as.numeric(predicted.y_test_auc)
+  
+  roc_object_test <- roc(y_test,predicted.y_test_auc)
+  SVM_auc_scores[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  SVM_acc_scores[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, predicted.y_test_auc)
+  SVM_sensitivity_scores[[paste0("eps_", eps)]] <- sensitivity(y_test, predicted.y_test_auc)
+  SVM_specificity_scores[[paste0("eps_", eps)]] <- specificity(y_test, predicted.y_test_auc)
+  SVM_final_gamma[[paste0("eps_", eps)]] <- SVM_gamma_for_auc
+  SVM_eps_huber_final[[paste0("eps_", eps)]] <- SVM_eps_huber
+}
+
+
+# Combine the lists into a data frame
+SVM_Output_linear <- data.frame(epsilon = eps_values, auc = unlist(SVM_auc_scores),
+                             acc = unlist(SVM_acc_scores),
+                              specificity = unlist(SVM_specificity_scores),
+                         sensitivity = unlist(SVM_sensitivity_scores),
+                         gamma = unlist( SVM_final_gamma ))
+
+SVM_Output_linear 
+
+write.csv(SVM_Output_linear, "SVM_OUTPUT_LINEAR.CSV")
+
+```
+
+
+
+#Objective Perturbation Linear SVM 
+```{r}
+set.seed(2424)
+eps_values<- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3,0.4, 0.5) 
+gamma_values <- seq(10^-5, 10^5, length.out = 40)
+
+huber <- c(0.3)
+
+# Define the bounds for the input data
+upper.bounds <- apply(x_train_processed, 2, max)
+lower.bounds <- apply(x_train_processed, 2, min) 
+objSVM_auc_scores <- list()
+objSVM_acc_scores <- list()
+objSVM_gamma_for_auc <- list()
+
+objSVM_gamma_for_auc_best <- list()
+
+obj_SVM_specificity_scores <- list()
+obj_SVM_sensitivity_scores <- list()
+objSVM_eps_best_auc <- 0
+
+objSVM_eps_huber <- 0
+
+for (eps in eps_values) {
+    for (gamma in gamma_values) {
+      for (huber.h in huber){
+        objSVMdp <- svmDP$new(regularizer, eps, gamma, perturbation.method = "objective", kernel="linear", huber.h)
+          
+        objauc_scores_cv <- c()
+        objacc_scores_cv <- c()
+        for (fold in seq_along(folds)) {
+          train_indices <- unlist(folds[-fold])
+          valid_indices <- folds[[fold]]
+          x_train_cv <- x_train_processed[train_indices,]
+          y_train_cv <- y_train[train_indices]
+          x_valid_cv <- x_train_processed[valid_indices, ]
+          y_valid_cv <- y_train[valid_indices]
+            
+          objSVMdp$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+        
+          objSVM_predicted.y <- objSVMdp$predict(x_valid_cv)
+          objSVM_predicted.y <- as.numeric(objSVM_predicted.y)
+          
+          roc_object <- roc(y_valid_cv, objSVM_predicted.y)
+          auc_scores_cv <- c(auc_scores_cv, pROC::auc(roc_object))
+          acc_scores_cv <-  calculate_accuracy(y_valid_cv, objSVM_predicted.y)
+          mean_auc <- mean(auc_scores_cv)
+
+        }
+      }
+        
+    }
+  
+  mean_auc <- mean(auc_scores_cv)
+  if (mean_auc > objSVM_eps_best_auc) {
+    objSVM_eps_best_auc <- mean_auc
+    objSVM_gamma_for_auc <- gamma
+    objSVM_eps_huber <- huber.h
+ 
+    
+  }
+  objSVM_auc <- svmDP$new(regularizer = 'l2',  eps, gamma = objSVM_gamma_for_auc, kernel="linear", huber.h = objSVM_eps_huber, perturbation.method = 'objective')
+  
+  objSVM_auc$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  objpredicted.y_test_auc <- objSVM_auc$predict(x_test_processed)
+  objpredicted.y_test_auc <- as.numeric(objpredicted.y_test_auc)
+
+  roc_object_test <- roc(y_test, objpredicted.y_test_auc)
+  objSVM_auc_scores[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  objSVM_acc_scores[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, objpredicted.y_test_auc)
+  objSVM_gamma_for_auc_best[[paste0("eps_", eps)]] <- gamma
+  obj_SVM_specificity_scores[[paste0("eps_", eps)]] <- specificity(y_test, objpredicted.y_test_auc)
+  obj_SVM_sensitivity_scores[[paste0("eps_", eps)]] <- sensitivity(y_test, objpredicted.y_test_auc)
+
+}
+
+
+  
+objSVM_Outputperformance <- data.frame(epsilon = eps_values,
+                                       auc = unlist(objSVM_auc_scores),
+                                       acc = unlist(objSVM_acc_scores),
+                                       specificity = unlist(obj_SVM_specificity_scores),
+                                       sensitivity =unlist(obj_SVM_sensitivity_scores),
+                                       gamma = unlist(objSVM_gamma_for_auc))
+                                       
+
+objSVM_Outputperformance 
+
+write.csv(objSVM_Outputperformance, "SVM_OBJ_LINEAR.CSV")
+```
+
+```{r}
+# Construct object for SVM
+regularizer <- 'l2' 
+folds <- createFolds(y_train, k = 5, list = TRUE, returnTrain = FALSE)
+```
+
+#Output Perturbation Radial SVM 
+```{r}
+# Define the range of values for epsilon and gamma
+set.seed(2424)
+D_values <- c(10)
+eps_values <- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3,0.4, 0.5) 
+
+gamma_values <- seq(10^-5, 10^5, length.out = 40)
+
+
+upper.bounds <- apply(x_train_processed, 2, max)
+lower.bounds <- apply(x_train_processed, 2, min)
+
+#expanindg the  bounds created even more instability 
+SVM_auc_scores_rad <- list()
+SVM_acc_scores_rad  <- list()
+SVM_gamma_for_auc_rad  <- list()
+SVM_gamma_for_acc_rad  <- list()
+SVM_specificity_scores_rad  <- list()
+SVM_sensitivity_scores_rad  <- list()
+SVM_final_gamma_rad  <- list()
+
+SVM_best_auc_rad  <- 0
+
+SVM_eps_huber_rad  <- 0
+SVM_eps_huber_final_rad  <- list()
+
+for (eps in eps_values) {
+  for (D in D_values) {
+    for (gamma in gamma_values) {
+      SVMdp <- svmDP$new(regularizer, eps ,gamma,perturbation.method = 'output', kernel="Gaussian", huber.h = 0.3, D = 10)
+      
+      auc_scores_cv  <- c()
+      acc_scores_cv  <- c()
+      for (fold in seq_along(folds)) {
+        train_indices <- unlist(folds[-fold])
+        valid_indices <- folds[[fold]]
+        x_train_cv <- x_train_processed[train_indices,]
+        y_train_cv <- y_train[train_indices]
+        x_valid_cv <- x_train_processed[valid_indices, ]
+        y_valid_cv <- y_train[valid_indices]
+    
+        # Fit the model on the training data
+        SVMdp$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+        
+        predicted.y_rad  <- SVMdp$predict(x_valid_cv)
+        predicted.y_rad  <- as.numeric(predicted.y_rad )
+        
+        roc_object <- roc(y_valid_cv, predicted.y_rad )
+        auc_scores_cv  <- c(auc_scores_cv , pROC::auc(roc_object))
+        mean_auc <- mean(auc_scores_cv)
+        }
+    
+    }
+  }
+  mean_auc <- mean(auc_scores_cv)
+
+  
+  if (mean_auc > SVM_best_auc_rad ) {
+    SVM_best_auc_rad  <- mean_auc
+    SVM_gamma_for_auc_rad  <- gamma
+    SVM_eps_huber_rad  <- huber.h
+  }
+  
+  SVM_auc_rad  <- svmDP$new(regularizer = 'l2',  eps, gamma = SVM_gamma_for_auc_rad , kernel="Gaussian", huber.h = 0.3 , perturbation.method = 'output', D = 10 )
+  
+  SVM_auc_rad$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  predicted.y_test_auc_rad  <- SVM_auc_rad$predict(x_test_processed)
+  predicted.y_test_auc_rad  <- as.numeric(predicted.y_test_auc_rad )
+  
+  roc_object_test <- roc(y_test,predicted.y_test_auc_rad )
+  SVM_auc_scores_rad[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  SVM_acc_scores_rad[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, predicted.y_test_auc_rad )
+  SVM_sensitivity_scores_rad[[paste0("eps_", eps)]] <- sensitivity(y_test, predicted.y_test_auc_rad )
+  SVM_specificity_scores_rad[[paste0("eps_", eps)]] <- specificity(y_test, predicted.y_test_auc_rad )
+  SVM_final_gamma_rad[[paste0("eps_", eps)]] <- SVM_gamma_for_auc
+  SVM_eps_huber_final_rad[[paste0("eps_", eps)]] <- SVM_eps_huber
+}
+
+
+# Combine the lists into a data frame
+SVM_Output_radial <- data.frame(epsilon = eps_values, auc = unlist(SVM_auc_scores_rad ),
+                             acc = unlist(SVM_acc_scores_rad ),
+                              specificity = unlist(SVM_specificity_scores_rad ),
+                         sensitivity = unlist(SVM_sensitivity_scores_rad ),
+                         gamma = unlist( SVM_final_gamma_rad  ))
+
+SVM_Output_radial
+
+write.csv(SVM_Output_radial, "SVM_OUTPUT_RADIAL.CSV")
+
+```
+
+
+
+#Objective Perturbation Radial SVM 
+
+```{r}
+set.seed(2424)
+D_values <- c(10)
+eps_values <- c(0.001, 0.01, 0.03, 0.05, 0.07, 0.09, 0.1, 0.2, 0.3,0.4, 0.5) 
+
+gamma_values <- seq(10^-5, 10^5, length.out = 40)
+
+upper.bounds <- apply(x_train_processed, 2, max)
+lower.bounds <- apply(x_train_processed, 2, min)
+
+#expanindg the  bounds created even more instability 
+objSVM_auc_scores_rad <- list()
+objSVM_acc_scores_rad  <- list()
+objSVM_gamma_for_auc_rad  <- list()
+objSVM_gamma_for_acc_rad  <- list()
+objSVM_specificity_scores_rad  <- list()
+objSVM_sensitivity_scores_rad  <- list()
+objSVM_final_gamma_rad  <- list()
+
+objSVM_best_auc_rad  <- 0
+
+objSVM_eps_huber_rad  <- 0
+objSVM_eps_huber_final_rad  <- list()
+
+for (eps in eps_values) {
+  for (D in D_values) {
+    for (gamma in gamma_values) {
+      objSVMdp <- svmDP$new(regularizer,eps,gamma,perturbation.method = 'objective', kernel="Gaussian", huber.h = 0.3, D = 10)
+      
+      auc_scores_cv  <- c()
+      acc_scores_cv  <- c()
+      for (fold in seq_along(folds)) {
+        train_indices <- unlist(folds[-fold])
+        valid_indices <- folds[[fold]]
+        x_train_cv <- x_train_processed[train_indices,]
+        y_train_cv <- y_train[train_indices]
+        x_valid_cv <- x_train_processed[valid_indices, ]
+        y_valid_cv <- y_train[valid_indices]
+    
+        # Fit the model on the training data
+        objSVMdp$fit(x_train_cv, y_train_cv, upper.bounds, lower.bounds, add.bias = FALSE)
+        
+        objpredicted.y_rad  <- objSVMdp$predict(x_valid_cv)
+        objpredicted.y_rad  <- as.numeric(objpredicted.y_rad )
+        
+        roc_object <- roc(y_valid_cv, objpredicted.y_rad )
+        auc_scores_cv  <- c(auc_scores_cv , pROC::auc(roc_object))
+        mean_auc <- mean(auc_scores_cv)
+        }
+    
+    }
+  }
+  mean_auc <- mean(auc_scores_cv)
+
+  
+  if (mean_auc > objSVM_best_auc_rad ) {
+    objSVM_best_auc_rad  <- mean_auc
+    objSVM_gamma_for_auc_rad  <- gamma
+
+  }
+  
+  objSVM_auc_rad  <- svmDP$new(regularizer = 'l2',  eps, gamma = SVM_gamma_for_auc_rad , kernel="Gaussian", huber.h = 0.3 , perturbation.method = 'objective', D = 10 )
+  
+  objSVM_auc_rad$fit(x_train_processed, y_train, upper.bounds, lower.bounds, add.bias = FALSE)
+  
+  objpredicted.y_test_auc_rad  <- objSVM_auc_rad$predict(x_test_processed)
+  objpredicted.y_test_auc_rad  <- as.numeric(objpredicted.y_test_auc_rad )
+  
+  roc_object_test <- roc(y_test,objpredicted.y_test_auc_rad )
+  objSVM_auc_scores_rad[[paste0("eps_", eps)]] <- pROC::auc(roc_object_test)
+  objSVM_acc_scores_rad[[paste0("eps_", eps)]] <- calculate_accuracy(y_test, objpredicted.y_test_auc_rad )
+  objSVM_sensitivity_scores_rad[[paste0("eps_", eps)]] <- sensitivity(y_test, objpredicted.y_test_auc_rad )
+  objSVM_specificity_scores_rad[[paste0("eps_", eps)]] <- specificity(y_test, objpredicted.y_test_auc_rad )
+  objSVM_final_gamma_rad[[paste0("eps_", eps)]] <- objSVM_gamma_for_auc
+
+}
+
+
+# Combine the lists into a data frame
+SVM_Obj_radial <- data.frame(epsilon = eps_values, auc = unlist(objSVM_auc_scores_rad),
+                             acc = unlist(objSVM_acc_scores_rad ),
+                              specificity = unlist(objSVM_specificity_scores_rad ),
+                         sensitivity = unlist(objSVM_sensitivity_scores_rad ))
+
+SVM_Obj_radial
+
+write.csv(SVM_Obj_radial, "SVM_Obj_RADIAL.CSV")
+```
+
+
+
+
+
+```{r}
+#Exporting CSV data for Python
+
+write.csv(train, "train_thesis.csv")
+write.csv(test, "test_thesis.csv")
+
+write.csv(y_test, "y_test.csv")
+write.csv(x_test_processed, "x_test_processed.csv")
+write.csv(x_train_processed, "x_train_processed.csv")
+write.csv(y_train, "y_train.csv")
+
+
+```
+
+
+
+
+
+
+```{r}
+save( ridge_test_metrics,
+      
+     file = here::here( "thesis_dataset.RData"))
+
+library(DPpack)
+citation("DPpack")
+
+```
+
+
+
